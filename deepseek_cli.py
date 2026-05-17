@@ -217,7 +217,7 @@ def get_swarm_workers(num_workers):
             
     return swarm_workers[:num_workers]
 
-def run_swarm(prompt, boss_agent, num_workers=4):
+def run_swarm(prompt, context_summary, boss_agent, num_workers=4):
     """Sequential persistent swarm pipeline to guarantee 100% success on free accounts."""
     workers = get_swarm_workers(num_workers)
     
@@ -231,8 +231,8 @@ def run_swarm(prompt, boss_agent, num_workers=4):
         color = WORKER_COLORS[i % len(WORKER_COLORS)]
         perspective = WORKER_PERSPECTIVES[i % len(WORKER_PERSPECTIVES)]
         
-        # Build strict prompt for worker (they inherently remember history via their session)
-        worker_prompt = f"[{perspective}]\n\nUSER REQUEST:\n{prompt}\n\nProvide your expert analysis based strictly on your assigned persona. Be concise."
+        # Build strict prompt for worker (injecting global context)
+        worker_prompt = f"[{perspective}]\n\nRECENT CONVERSATION (Context):\n{context_summary}\n\nUSER REQUEST:\n{prompt}\n\nProvide your expert analysis based strictly on your assigned persona. Be concise."
         
         print(f"  {color}▶ Worker-{i+1} is thinking...{RESET}", end='', flush=True)
         
@@ -262,7 +262,7 @@ def run_swarm(prompt, boss_agent, num_workers=4):
             boss_prompt += f"═══ WORKER {i+1} ({label}) ═══\n{r}\n\n"
             
     boss_prompt += "Synthesize ONE comprehensive final answer. Resolve any contradictions. Do NOT mention the workers or boss."
-    boss_agent.send_message(boss_prompt)
+    return boss_agent.send_message(boss_prompt)
 
 
 # ─────────────────────────────────────────────────────────
@@ -373,10 +373,28 @@ def interactive_cli():
                     print(f"{RED}[System] Unknown: {cmd}. Type /help{RESET}")
                 continue
             
+            # Track conversation for context
+            conversation_context.append(f"User: {user_input}")
+            
             if swarm_mode:
-                run_swarm(user_input, boss, num_workers)
+                context_summary = "\n".join(conversation_context[-6:])
+                if len(context_summary) > 2000:
+                    context_summary = context_summary[-2000:]
+                
+                response = run_swarm(user_input, context_summary, boss, num_workers)
+                if response:
+                    # Keep a short summary of the Boss response for context
+                    summary = response[:300] + "..." if len(response) > 300 else response
+                    conversation_context.append(f"DeepSeek: {summary}")
             else:
-                boss.send_message(user_input)
+                response = boss.send_message(user_input)
+                if response:
+                    summary = response[:300] + "..." if len(response) > 300 else response
+                    conversation_context.append(f"DeepSeek: {summary}")
+            
+            # Keep context window manageable (last 10 exchanges)
+            if len(conversation_context) > 20:
+                conversation_context = conversation_context[-20:]
             
         except KeyboardInterrupt:
             print(f"\n{YELLOW}Interrupted. Exiting...{RESET}")
