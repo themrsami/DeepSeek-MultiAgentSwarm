@@ -1,0 +1,14 @@
+# Test & scratch files
+test_*.py
+dump.txt
+session_res.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# IDE
+.vscode/
+.idea/
