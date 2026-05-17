@@ -19,8 +19,8 @@ MAGENTA = '\033[95m'
 BOLD = '\033[1m'
 RESET = '\033[0m'
 
-sys.path.append(os.path.join(os.path.dirname(__file__), 'deepseek4free'))
-from dsk.pow import DeepSeekPOW
+sys.path.append(os.path.dirname(__file__))
+from pow_solver.pow import DeepSeekPOW
 
 TOKEN = "4Qn7z3tRCQLa+OI6sGqD313OcwQV0dFUOvoztChaTbuTFY5FHfN3m8GXBQGvkV1W"
 COOKIES = {
