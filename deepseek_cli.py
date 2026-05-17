@@ -9,6 +9,17 @@ import threading
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+try:
+    from rich.console import Console
+    from rich.console import Group
+    from rich.live import Live
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+    console = Console()
+except ImportError:
+    print("Please install rich: pip install rich")
+    sys.exit(1)
+
 # Colors for UI
 CYAN = '\033[96m'
 GREEN = '\033[92m'
@@ -113,15 +124,21 @@ class DeepSeekAgent:
         }
 
         if not return_text:
-            print(f"{CYAN}{BOLD}{self.name}:{RESET} ", end='', flush=True)
+            console.print(f"\n[bold cyan]{self.name}:[/bold cyan]")
             
         full_response = ""
         thinking_response = ""
+        
+        live = None
+        if not return_text:
+            live = Live(console=console, refresh_per_second=15)
+            live.start()
+            
         try:
             response = self.req_session.post("https://chat.deepseek.com/api/v0/chat/completion", headers=self.headers, json=json_data, cookies=self.cookies, stream=True, timeout=60)
             if response.status_code != 200:
                 err = f"[Error] {response.status_code}: {response.text}"
-                if not return_text: print(f"{RED}{err}{RESET}")
+                if not return_text: console.print(f"[red]{err}[/red]")
                 return err
 
             current_response_id = None
@@ -150,25 +167,25 @@ class DeepSeekAgent:
                                 if current_pointer == "response/thinking_content":
                                     thinking_response += content
                                     if not return_text:
-                                        if not is_thinking:
-                                            print(f"\n{GRAY}[Thinking...]\n", end='', flush=True)
-                                            is_thinking = True
-                                        print(f"{GRAY}{content}{RESET}", end='', flush=True)
+                                        live.update(Panel(thinking_response, title="Thinking...", border_style="yellow"))
                                         
                                 elif current_pointer == "response/content":
                                     full_response += content
                                     if not return_text:
-                                        if is_thinking:
-                                            print(f"\n[End Thinking]\n{RESET}", end='', flush=True)
-                                            is_thinking = False
-                                        print(content, end='', flush=True)
+                                        if thinking_response:
+                                            renderable = Group(
+                                                Panel("Thinking process completed.", title="Thought Process", border_style="dim"),
+                                                Markdown(full_response)
+                                            )
+                                        else:
+                                            renderable = Markdown(full_response)
+                                        live.update(renderable)
                                         
                                 elif current_pointer == "response/message_id" and data.get("o") == "SET":
                                     current_response_id = data["v"]
                     except Exception:
                         pass
                         
-            if not return_text: print()
             if current_response_id:
                 self.parent_msg_id = current_response_id
                 
@@ -176,8 +193,11 @@ class DeepSeekAgent:
 
         except Exception as e:
             err = f"[Connection Error] {e}"
-            if not return_text: print(f"\n{RED}{err}{RESET}")
+            if not return_text: console.print(f"\n[red]{err}[/red]")
             return err
+        finally:
+            if live is not None:
+                live.stop()
 
 
 # ─────────────────────────────────────────────────────────
