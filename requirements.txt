@@ -1,0 +1,8 @@
+requests
+rich
+fastapi
+uvicorn
+pydantic
+playwright
+wasmtime
+numpy

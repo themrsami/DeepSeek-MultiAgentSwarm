@@ -35,12 +35,7 @@ RESET = '\033[0m'
 
 sys.path.append(os.path.dirname(__file__))
 from pow_solver.pow import DeepSeekPOW
-
-TOKEN = "4Qn7z3tRCQLa+OI6sGqD313OcwQV0dFUOvoztChaTbuTFY5FHfN3m8GXBQGvkV1W"
-COOKIES = {
-    "aws-waf-token": "f1a1e45e-8294-44c7-a8e9-fe3b035d5817:BQoAjJVYIeILAAAA:9wYjt0sHghCsEL9A+mxacVW03Top24zoFDQGJ+G+69Q3Ec12Z4+8UI+78GXDwKUA+/v9/DoS81AnVhqOEW4OcdA8fWm2xW8IvmAZfywPhcuBR7FHTtkRIgXjdazpA59ZCUMt8iHdInH3W/vPSecDiB1+34zoejo69XK9JfpxpxvmmECVG767IPhSYEa5+rY=",
-    "smidV2": "202605171743367e0a94fcabd251066a9f145a1ec3954b003acbfdcef91ebc0"
-}
+from auth import load_auth, logout, interactive_login
 
 # DeepSeek limits: ~8000 chars safe per-worker summary for boss prompt
 # Total boss prompt should stay under ~32K chars to be safe
@@ -53,12 +48,23 @@ print_lock = threading.Lock()
 def cleanup_all_sessions():
     if not active_sessions:
         return
+        
+    auth_data = load_auth()
+    if not auth_data: return
+    
+    token = auth_data['token']
+    cookie_dict = {}
+    for c in auth_data['cookies'].split(';'):
+        if '=' in c:
+            k, v = c.strip().split('=', 1)
+            cookie_dict[k] = v
+
     with print_lock:
         print(f"\n{GRAY}[Cleanup] Deleting {len(active_sessions)} sessions from your account...{RESET}", flush=True)
-    headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     for sid in active_sessions:
         try:
-            requests.post("https://chat.deepseek.com/api/v0/chat_session/delete", headers=headers, json={"chat_session_id": sid}, cookies=COOKIES, timeout=5)
+            requests.post("https://chat.deepseek.com/api/v0/chat_session/delete", headers=headers, json={"chat_session_id": sid}, cookies=cookie_dict, timeout=5)
         except:
             pass
     with print_lock:
@@ -68,10 +74,21 @@ def cleanup_all_sessions():
 atexit.register(cleanup_all_sessions)
 
 class DeepSeekAgent:
-    def __init__(self, name="DeepSeek", token=TOKEN, cookies=COOKIES):
+    def __init__(self, name="DeepSeek"):
         self.name = name
-        self.token = token
-        self.cookies = cookies
+        
+        auth_data = load_auth()
+        if not auth_data:
+            self.token = ""
+            self.cookies = {}
+        else:
+            self.token = auth_data['token']
+            cookie_dict = {}
+            for c in auth_data['cookies'].split(';'):
+                if '=' in c:
+                    k, v = c.strip().split('=', 1)
+                    cookie_dict[k] = v
+            self.cookies = cookie_dict
         self.pow_solver = DeepSeekPOW()
         self.session_id = None
         self.parent_msg_id = None
@@ -237,15 +254,17 @@ def get_swarm_workers(num_workers):
             
     return swarm_workers[:num_workers]
 
-def run_swarm(prompt, context_summary, boss_agent, num_workers=4):
+def run_swarm(prompt, context_summary, boss_agent, num_workers=4, cli_mode=True):
     """Sequential persistent swarm pipeline to guarantee 100% success on free accounts."""
     workers = get_swarm_workers(num_workers)
     
-    print(f"\n{MAGENTA}{BOLD}╔══════════════════════════════════════╗{RESET}")
-    print(f"{MAGENTA}{BOLD}║       SWARM MODE PROCESSING          ║{RESET}")
-    print(f"{MAGENTA}{BOLD}╚══════════════════════════════════════╝{RESET}")
+    if cli_mode:
+        print(f"\n{MAGENTA}{BOLD}╔══════════════════════════════════════╗{RESET}")
+        print(f"{MAGENTA}{BOLD}║       SWARM MODE PROCESSING          ║{RESET}")
+        print(f"{MAGENTA}{BOLD}╚══════════════════════════════════════╝{RESET}")
     
     ordered_responses = []
+    worker_outputs = []
     
     for i, agent in enumerate(workers):
         color = WORKER_COLORS[i % len(WORKER_COLORS)]
@@ -254,12 +273,14 @@ def run_swarm(prompt, context_summary, boss_agent, num_workers=4):
         # Build strict prompt for worker (injecting global context)
         worker_prompt = f"[{perspective}]\n\nRECENT CONVERSATION (Context):\n{context_summary}\n\nUSER REQUEST:\n{prompt}\n\nProvide your expert analysis based strictly on your assigned persona. Be concise."
         
-        print(f"  {color}▶ Worker-{i+1} is thinking...{RESET}", end='', flush=True)
+        if cli_mode:
+            print(f"  {color}▶ Worker-{i+1} is thinking...{RESET}", end='', flush=True)
         
         # Send message (blocks until stream is done) - auto retries if empty
         max_retries = 3
         response_text = ""
         for attempt in range(max_retries):
+            # If not in CLI mode, we suppress outputs inside send_message
             response_text = agent.send_message(worker_prompt, return_text=True)
             if len(response_text) > 50:
                 break
@@ -268,12 +289,19 @@ def run_swarm(prompt, context_summary, boss_agent, num_workers=4):
         char_count = len(response_text)
         status = f"{GREEN}OK{RESET}" if char_count > 50 else f"{RED}FAILED{RESET}"
         
-        # Overwrite the thinking line
-        print(f"\r  {color}✓ Worker-{i+1} responded! ({char_count} chars) [{status}]{RESET}   ")
+        if cli_mode:
+            print(f"\r  {color}✓ Worker-{i+1} responded! ({char_count} chars) [{status}]{RESET}   ")
+            
         ordered_responses.append(response_text)
+        worker_outputs.append({
+            "worker": f"Worker-{i+1}",
+            "perspective": perspective.split('.')[0].replace('You are the ', ''),
+            "response": response_text
+        })
     
     # ── Boss synthesizes ──
-    print(f"\n{YELLOW}{BOLD}  ⚡ Boss Agent is synthesizing the final answer...{RESET}\n")
+    if cli_mode:
+        print(f"\n{YELLOW}{BOLD}  ⚡ Boss Agent is synthesizing the final answer...{RESET}\n")
     
     boss_prompt = f"The user asked: '{prompt}'.\n\nYour expert workers have analyzed this:\n\n"
     for i, r in enumerate(ordered_responses):
@@ -282,7 +310,16 @@ def run_swarm(prompt, context_summary, boss_agent, num_workers=4):
             boss_prompt += f"═══ WORKER {i+1} ({label}) ═══\n{r}\n\n"
             
     boss_prompt += "Synthesize ONE comprehensive final answer. Resolve any contradictions. Do NOT mention the workers or boss."
-    return boss_agent.send_message(boss_prompt)
+    
+    if cli_mode:
+        boss_final = boss_agent.send_message(boss_prompt)
+        return boss_final
+    else:
+        boss_final = boss_agent.send_message(boss_prompt, return_text=True)
+        return {
+            "boss_response": boss_final,
+            "worker_responses": worker_outputs
+        }
 
 
 # ─────────────────────────────────────────────────────────
@@ -290,13 +327,6 @@ def run_swarm(prompt, context_summary, boss_agent, num_workers=4):
 # ─────────────────────────────────────────────────────────
 
 def interactive_cli():
-    boss = DeepSeekAgent(name="DeepSeek")
-    boss.init_session(silent=True)
-    
-    swarm_mode = False
-    num_workers = 4
-    conversation_context = []  # Track conversation for worker context
-    
     # Banner
     print(f"""
 {MAGENTA}{BOLD}╔══════════════════════════════════════════╗
@@ -324,6 +354,23 @@ def interactive_cli():
   All sessions auto-cleanup on exit.{RESET}
 {GRAY}──────────────────────────────────────────{RESET}
 """)
+
+    boss = None
+    swarm_mode = False
+    num_workers = 4
+    conversation_context = []
+    
+    # Check Auth
+    if not load_auth():
+        print(f"{YELLOW}[Warning] You are not logged in!{RESET}")
+        print(f"{GRAY}Type /login to authenticate via browser.{RESET}\n")
+    else:
+        boss = DeepSeekAgent(name="DeepSeek")
+        try:
+            boss.init_session(silent=True)
+        except Exception:
+            print(f"{RED}[Error] Failed to initialize. Is your token expired? Type /login to re-authenticate.{RESET}\n")
+            boss = None
     
     while True:
         try:
@@ -387,12 +434,29 @@ def interactive_cli():
   {YELLOW}/expert{RESET}      Expert model          {YELLOW}/instant{RESET}     Instant model
 {WHITE}{BOLD}Swarm:{RESET}
   {MAGENTA}/swarm{RESET}       Toggle swarm          {MAGENTA}/agents N{RESET}    Set workers (2-6)
-{WHITE}{BOLD}Session:{RESET}
+{WHITE}{BOLD}Session & Auth:{RESET}
+  {GREEN}/login{RESET}       Login via Browser     {RED}/logout{RESET}       Logout
   {RED}/exit{RESET}        Quit & cleanup        {CYAN}/help{RESET}         This menu""")
+                elif cmd == '/login':
+                    if interactive_login():
+                        # Re-initialize Boss
+                        boss = DeepSeekAgent(name="DeepSeek")
+                        boss.init_session(silent=True)
+                        print(f"{GREEN}[System] Boss agent ready!{RESET}")
+                elif cmd == '/logout':
+                    if logout():
+                        print(f"{GREEN}[System] Logged out successfully. Credentials deleted.{RESET}")
+                        boss = None
+                    else:
+                        print(f"{YELLOW}[System] You are not logged in.{RESET}")
                 else:
                     print(f"{RED}[System] Unknown: {cmd}. Type /help{RESET}")
                 continue
             
+            if boss is None:
+                print(f"{RED}[Error] You must /login before sending messages.{RESET}")
+                continue
+                
             # Track conversation for context
             conversation_context.append(f"User: {user_input}")
             
