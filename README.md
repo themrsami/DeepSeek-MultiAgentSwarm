@@ -64,7 +64,20 @@ uvicorn api:app --reload
 ```
 The server will start at `http://localhost:8000`.
 
-*(Optional: Use `ngrok http 8000` to expose this API to the internet permanently!)*
+### 🌍 Exposing the API Globally (ngrok)
+To use this API in a live web app (React, Vercel, etc.) or access it from anywhere in the world, you can expose your local server using **ngrok**:
+
+1. Install ngrok from [ngrok.com](https://ngrok.com/).
+2. Add your auth token (only needed once):
+   ```bash
+   ngrok config add-authtoken YOUR_NGROK_TOKEN
+   ```
+3. Run ngrok to expose port 8000. You can claim a **free static domain** in the ngrok dashboard so your API URL never changes:
+   ```bash
+   ngrok http --domain=your-custom-name.ngrok-free.app 8000
+   ```
+Now your API is permanently live at `https://your-custom-name.ngrok-free.app/chat` and can be fetched from anywhere!
+
 
 ### API Endpoints
 
