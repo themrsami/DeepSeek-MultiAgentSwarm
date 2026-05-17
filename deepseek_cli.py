@@ -377,10 +377,10 @@ def interactive_cli():
             # Build status bar
             flags = []
             if swarm_mode: flags.append(f"{MAGENTA}SWARM({num_workers}){RESET}")
-            if boss.model_class == "deepseek_reasoner": flags.append(f"{RED}EXPERT{RESET}")
-            else: flags.append(f"{GREEN}INSTANT{RESET}")
-            if boss.thinking_enabled: flags.append(f"{YELLOW}THINK{RESET}")
-            if boss.search_enabled: flags.append(f"{CYAN}SEARCH{RESET}")
+            if boss and boss.model_class == "deepseek_reasoner": flags.append(f"{RED}EXPERT{RESET}")
+            elif boss and boss.model_class == "deepseek_chat": flags.append(f"{CYAN}INSTANT{RESET}")
+            if boss and getattr(boss, 'thinking_enabled', False): flags.append(f"{YELLOW}THINKING{RESET}")
+            if boss and getattr(boss, 'search_enabled', False): flags.append(f"{BLUE}SEARCH{RESET}")
             
             indicator = f"[{'|'.join(flags)}]"
             user_input = input(f"\n{indicator} {BOLD}You:{RESET} ").strip()
