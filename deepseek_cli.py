@@ -255,6 +255,9 @@ Provide your expert analysis. Be concise but thorough (max 500 words). Do NOT re
     
     def send_worker_message(worker_id):
         """Send the pre-prepared prompt (session + POW already done)."""
+        # Stagger the start to avoid sending 4 simultaneous POSTs
+        time.sleep(worker_id * 1.5)
+        
         agent = workers[worker_id]
         json_data = {
             'chat_session_id': agent.session_id,
@@ -266,35 +269,49 @@ Provide your expert analysis. Be concise but thorough (max 500 words). Do NOT re
             'model_class': agent.model_class
         }
         
+        max_retries = 3
         full_response = ""
-        try:
-            response = agent.req_session.post(
-                "https://chat.deepseek.com/api/v0/chat/completion",
-                headers=agent.headers, json=json_data,
-                cookies=agent.cookies, stream=True, timeout=60
-            )
-            if response.status_code != 200:
-                return f"[Error] Worker-{worker_id+1} got status {response.status_code}"
-            
-            current_pointer = "response/content"
-            for line in response.iter_lines():
-                if line:
-                    try:
-                        line_str = line.decode('utf-8')
-                        if line_str.startswith('data: '):
-                            payload = line_str[6:]
-                            if payload == "{}": continue
-                            data = json.loads(payload)
-                            if "p" in data:
-                                current_pointer = data["p"]
-                            if "v" in data and current_pointer == "response/content":
-                                content = data["v"]
-                                if isinstance(content, str):
-                                    full_response += content
-                    except:
-                        pass
-        except Exception as e:
-            return f"[Error] Worker-{worker_id+1}: {e}"
+        
+        for attempt in range(max_retries):
+            full_response = ""
+            try:
+                response = agent.req_session.post(
+                    "https://chat.deepseek.com/api/v0/chat/completion",
+                    headers=agent.headers, json=json_data,
+                    cookies=agent.cookies, stream=True, timeout=60
+                )
+                if response.status_code != 200:
+                    time.sleep(2)
+                    continue
+                
+                current_pointer = "response/content"
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            line_str = line.decode('utf-8')
+                            if line_str.startswith('data: '):
+                                payload = line_str[6:]
+                                if payload == "{}": continue
+                                data = json.loads(payload)
+                                if "p" in data:
+                                    current_pointer = data["p"]
+                                if "v" in data and current_pointer == "response/content":
+                                    content = data["v"]
+                                    if isinstance(content, str):
+                                        full_response += content
+                        except:
+                            pass
+                            
+                if len(full_response) > 50:
+                    break  # Success!
+                else:
+                    # DeepSeek returned an empty response due to rate-limiting
+                    time.sleep(2)
+            except Exception as e:
+                time.sleep(2)
+        
+        if len(full_response) < 50:
+            return f"[Error] Worker-{worker_id+1} failed to respond after {max_retries} attempts."
         
         # Truncate if too long
         if len(full_response) > MAX_WORKER_RESPONSE_CHARS:
