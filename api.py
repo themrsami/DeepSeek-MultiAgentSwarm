@@ -77,7 +77,11 @@ def chat_endpoint(req: ChatRequest):
             raise HTTPException(status_code=500, detail=f"Swarm failed: {str(e)}")
     else:
         try:
-            ans = boss_agent.send_message(req.prompt, return_text=True)
+            final_prompt = req.prompt
+            if req.context_summary:
+                final_prompt = f"Previous Context:\n{req.context_summary}\n\nCurrent Task: {req.prompt}"
+                
+            ans = boss_agent.send_message(final_prompt, return_text=True)
             return {
                 "status": "success",
                 "data": {
