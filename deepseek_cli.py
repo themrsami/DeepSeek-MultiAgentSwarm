@@ -16,7 +16,10 @@ YELLOW = '\033[93m'
 RED = '\033[91m'
 GRAY = '\033[90m'
 MAGENTA = '\033[95m'
+BLUE = '\033[94m'
+WHITE = '\033[97m'
 BOLD = '\033[1m'
+DIM = '\033[2m'
 RESET = '\033[0m'
 
 sys.path.append(os.path.dirname(__file__))
@@ -28,24 +31,27 @@ COOKIES = {
     "smidV2": "202605171743367e0a94fcabd251066a9f145a1ec3954b003acbfdcef91ebc0"
 }
 
-# Global list of sessions to clean up
+# DeepSeek limits: ~8000 chars safe per-worker summary for boss prompt
+# Total boss prompt should stay under ~32K chars to be safe
+MAX_WORKER_RESPONSE_CHARS = 6000
+
+# Global session tracking for cleanup
 active_sessions = []
+print_lock = threading.Lock()
 
 def cleanup_all_sessions():
     if not active_sessions:
         return
-    print(f"\n{GRAY}[System] Cleaning up {len(active_sessions)} chat sessions...{RESET}")
+    with print_lock:
+        print(f"\n{GRAY}[Cleanup] Deleting {len(active_sessions)} sessions from your account...{RESET}", flush=True)
+    headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
     for sid in active_sessions:
         try:
-            requests.post(
-                "https://chat.deepseek.com/api/v0/chat_session/delete",
-                headers={"Authorization": f"Bearer {TOKEN}"},
-                json={"chat_session_id": sid},
-                cookies=COOKIES,
-                timeout=5
-            )
+            requests.post("https://chat.deepseek.com/api/v0/chat_session/delete", headers=headers, json={"chat_session_id": sid}, cookies=COOKIES, timeout=5)
         except:
             pass
+    with print_lock:
+        print(f"{GREEN}[Cleanup] Done! All sessions wiped.{RESET}", flush=True)
     active_sessions.clear()
 
 atexit.register(cleanup_all_sessions)
@@ -85,7 +91,8 @@ class DeepSeekAgent:
 
     def init_session(self, silent=False):
         if not silent:
-            print(f"{GRAY}[{self.name}] Initializing session...{RESET}")
+            with print_lock:
+                print(f"{GRAY}[{self.name}] Creating session...{RESET}", flush=True)
         res = self.req_session.post("https://chat.deepseek.com/api/v0/chat_session/create", headers=self.headers, json={"character_id": None}, cookies=self.cookies, timeout=10)
         res.raise_for_status()
         self.session_id = res.json()['data']['biz_data']['id']
@@ -109,8 +116,9 @@ class DeepSeekAgent:
             print(f"{CYAN}{BOLD}{self.name}:{RESET} ", end='', flush=True)
             
         full_response = ""
+        thinking_response = ""
         try:
-            response = self.req_session.post("https://chat.deepseek.com/api/v0/chat/completion", headers=self.headers, json=json_data, cookies=self.cookies, stream=True, timeout=30)
+            response = self.req_session.post("https://chat.deepseek.com/api/v0/chat/completion", headers=self.headers, json=json_data, cookies=self.cookies, stream=True, timeout=60)
             if response.status_code != 200:
                 err = f"[Error] {response.status_code}: {response.text}"
                 if not return_text: print(f"{RED}{err}{RESET}")
@@ -140,6 +148,7 @@ class DeepSeekAgent:
                                 if not isinstance(content, str): continue
                                 
                                 if current_pointer == "response/thinking_content":
+                                    thinking_response += content
                                     if not return_text:
                                         if not is_thinking:
                                             print(f"\n{GRAY}[Thinking...]\n", end='', flush=True)
@@ -147,12 +156,12 @@ class DeepSeekAgent:
                                         print(f"{GRAY}{content}{RESET}", end='', flush=True)
                                         
                                 elif current_pointer == "response/content":
+                                    full_response += content
                                     if not return_text:
                                         if is_thinking:
                                             print(f"\n[End Thinking]\n{RESET}", end='', flush=True)
                                             is_thinking = False
                                         print(content, end='', flush=True)
-                                    full_response += content
                                         
                                 elif current_pointer == "response/message_id" and data.get("o") == "SET":
                                     current_response_id = data["v"]
@@ -170,43 +179,166 @@ class DeepSeekAgent:
             if not return_text: print(f"\n{RED}{err}{RESET}")
             return err
 
-def worker_task(i, prompt):
-    perspectives = [
-        "Focus on direct, factual, and analytical breakdown.",
-        "Focus on creative, out-of-the-box, and unconventional ideas.",
-        "Focus on edge cases, potential risks, and downsides.",
-        "Focus on summarizing the core essence with practical examples."
-    ]
-    agent = DeepSeekAgent(name=f"Worker-{i+1}")
-    agent.model_class = "deepseek_chat" # Fast for workers
+
+# ─────────────────────────────────────────────────────────
+#  SWARM ORCHESTRATOR
+# ─────────────────────────────────────────────────────────
+
+WORKER_PERSPECTIVES = [
+    "You are the ANALYTICAL expert. Give a direct, factual, data-driven breakdown. Be precise and thorough.",
+    "You are the CREATIVE expert. Think outside the box. Offer unconventional, innovative ideas and angles.",
+    "You are the CRITICAL expert. Identify edge cases, potential risks, downsides, and things others might miss.",
+    "You are the PRACTICAL expert. Focus on actionable advice, real-world examples, and step-by-step guidance.",
+    "You are the RESEARCH expert. Provide deep background knowledge, references, and comprehensive context.",
+    "You are the STRATEGIC expert. Think long-term. Consider scalability, future implications, and big-picture planning.",
+]
+
+def run_worker(worker_id, total_workers, prompt, context_summary, on_complete_callback):
+    """Each worker runs in its own thread with its own DeepSeek session."""
+    perspective = WORKER_PERSPECTIVES[worker_id % len(WORKER_PERSPECTIVES)]
+    
+    agent = DeepSeekAgent(name=f"Worker-{worker_id+1}")
+    agent.model_class = "deepseek_chat"  # Instant mode for speed
     agent.init_session(silent=True)
-    worker_prompt = f"You are Expert {i+1}. {perspectives[i]}\nAnalyze this prompt: '{prompt}'"
-    return agent.send_message(worker_prompt, return_text=True)
+    
+    # Build worker prompt WITH conversation context
+    worker_prompt = f"""You are Worker {worker_id+1} of {total_workers} in a multi-agent analysis team.
+{perspective}
+
+CONVERSATION CONTEXT (what the user discussed before):
+{context_summary if context_summary else '(This is the first message)'}
+
+USER'S CURRENT REQUEST:
+{prompt}
+
+Provide your expert analysis. Be concise but thorough (max 500 words). Do NOT repeat the question back."""
+
+    result = agent.send_message(worker_prompt, return_text=True)
+    
+    # Truncate if too long
+    if len(result) > MAX_WORKER_RESPONSE_CHARS:
+        result = result[:MAX_WORKER_RESPONSE_CHARS] + "\n...[truncated for brevity]"
+    
+    # Callback to notify main thread
+    on_complete_callback(worker_id, result)
+    return result
+
+
+def run_swarm(prompt, context_summary, boss_agent, num_workers=4):
+    """Orchestrate the full Boss & Workers swarm pipeline."""
+    
+    completed = []
+    completion_lock = threading.Lock()
+    
+    def on_worker_done(worker_id, result):
+        with completion_lock:
+            completed.append(worker_id)
+            count = len(completed)
+        with print_lock:
+            color = [GREEN, CYAN, YELLOW, MAGENTA, BLUE, RED][worker_id % 6]
+            print(f"\r{color}  ✓ Worker-{worker_id+1} responded! ({count}/{num_workers} done){RESET}          ", flush=True)
+    
+    # Phase 1: Dispatch workers
+    print(f"\n{MAGENTA}{BOLD}╔══════════════════════════════════════╗{RESET}")
+    print(f"{MAGENTA}{BOLD}║       SWARM MODE ACTIVATED           ║{RESET}")
+    print(f"{MAGENTA}{BOLD}╚══════════════════════════════════════╝{RESET}")
+    print(f"{GRAY}  Dispatching {num_workers} Expert Workers...{RESET}")
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [
+            executor.submit(run_worker, i, num_workers, prompt, context_summary, on_worker_done) 
+            for i in range(num_workers)
+        ]
+        
+        # Show live spinner while waiting
+        spinners = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏']
+        idx = 0
+        while not all(f.done() for f in futures):
+            with print_lock:
+                done_count = len(completed)
+                print(f"\r{GRAY}  {spinners[idx % len(spinners)]} Workers brainstorming... ({done_count}/{num_workers}){RESET}   ", end='', flush=True)
+            idx += 1
+            time.sleep(0.08)
+        
+        responses = [f.result() for f in futures]
+    
+    # Phase 2: Boss synthesizes
+    print(f"\n{GREEN}{BOLD}  ✓ All {num_workers} Workers done!{RESET}")
+    print(f"{YELLOW}{BOLD}  ⚡ Boss Agent is synthesizing the final answer...{RESET}\n")
+    
+    # Build boss prompt with length awareness
+    boss_prompt = f"""You are the BOSS agent in a multi-agent swarm system.
+
+The user asked: "{prompt}"
+
+Your {num_workers} expert workers have analyzed this from different angles. Here are their responses:
+
+"""
+    for i, r in enumerate(responses):
+        boss_prompt += f"═══ WORKER {i+1} ({WORKER_PERSPECTIVES[i % len(WORKER_PERSPECTIVES)].split('.')[0].replace('You are the ', '')}) ═══\n{r}\n\n"
+    
+    boss_prompt += f"""═══ YOUR TASK ═══
+1. Review ALL {num_workers} worker responses carefully.
+2. Extract the BEST insights from each.
+3. Resolve any contradictions between workers.
+4. Synthesize ONE comprehensive, well-structured final answer.
+5. Add any critical points the workers may have missed.
+Do NOT mention that you are a boss or that workers exist. Just give the user the best possible answer directly."""
+
+    # Check total prompt size
+    total_chars = len(boss_prompt)
+    if total_chars > 30000:
+        with print_lock:
+            print(f"{YELLOW}  [Warning] Boss prompt is {total_chars} chars. Responses were auto-truncated.{RESET}")
+    
+    boss_agent.send_message(boss_prompt)
+
+
+# ─────────────────────────────────────────────────────────
+#  INTERACTIVE CLI
+# ─────────────────────────────────────────────────────────
 
 def interactive_cli():
-    boss = DeepSeekAgent(name="Boss")
+    boss = DeepSeekAgent(name="DeepSeek")
     boss.init_session(silent=True)
     
     swarm_mode = False
+    num_workers = 4
+    conversation_context = []  # Track conversation for worker context
     
-    # UI Header
-    print(f"\n{MAGENTA}{BOLD}========================================={RESET}")
-    print(f"{MAGENTA}{BOLD}       DeepSeek Advanced CLI UI          {RESET}")
-    print(f"{MAGENTA}{BOLD}========================================={RESET}")
-    print(f"{GREEN}Commands:{RESET}")
-    print(f"  {YELLOW}/think{RESET}    - Toggle DeepThink (R1)")
-    print(f"  {YELLOW}/search{RESET}   - Toggle Web Search")
-    print(f"  {YELLOW}/expert{RESET}   - Switch to Expert model")
-    print(f"  {YELLOW}/instant{RESET}  - Switch to Instant model")
-    print(f"  {YELLOW}/swarm{RESET}    - Toggle Multi-Agent Swarm (Boss & 4 Workers)")
-    print(f"  {YELLOW}/exit{RESET}     - Quit and cleanup chats")
-    print(f"{GRAY}-----------------------------------------{RESET}\n")
+    # Banner
+    print(f"""
+{MAGENTA}{BOLD}╔══════════════════════════════════════════╗
+║     DeepSeek MultiAgent Swarm CLI        ║
+╚══════════════════════════════════════════╝{RESET}
+
+{WHITE}{BOLD}Toggle Commands:{RESET}
+  {YELLOW}/think{RESET}       Toggle DeepThink (R1 reasoning)     {GRAY}[combinable]{RESET}
+  {YELLOW}/search{RESET}      Toggle Web Search                   {GRAY}[combinable]{RESET}
+  {YELLOW}/expert{RESET}      Switch to Expert model               {GRAY}[exclusive]{RESET}
+  {YELLOW}/instant{RESET}     Switch to Instant model              {GRAY}[exclusive]{RESET}
+
+{WHITE}{BOLD}Swarm Commands:{RESET}
+  {MAGENTA}/swarm{RESET}       Toggle multi-agent swarm mode
+  {MAGENTA}/agents N{RESET}    Set number of swarm workers (2-6)
+
+{WHITE}{BOLD}Session:{RESET}
+  {RED}/exit{RESET}        Quit & auto-delete all sessions
+  {CYAN}/help{RESET}        Show this menu again
+
+{GRAY}──────────────────────────────────────────{RESET}
+{GRAY}  Think + Search can be ON at same time.
+  Expert/Instant are mutually exclusive.
+  Swarm mode uses N workers + 1 boss.
+  All sessions auto-cleanup on exit.{RESET}
+{GRAY}──────────────────────────────────────────{RESET}
+""")
     
     while True:
         try:
-            # Build dynamic prompt indicator
+            # Build status bar
             flags = []
-            if swarm_mode: flags.append(f"{MAGENTA}SWARM{RESET}")
+            if swarm_mode: flags.append(f"{MAGENTA}SWARM({num_workers}){RESET}")
             if boss.model_class == "deepseek_reasoner": flags.append(f"{RED}EXPERT{RESET}")
             else: flags.append(f"{GREEN}INSTANT{RESET}")
             if boss.thinking_enabled: flags.append(f"{YELLOW}THINK{RESET}")
@@ -223,50 +355,74 @@ def interactive_cli():
                 
             # Slash Commands
             if user_input.startswith('/'):
-                cmd = user_input.lower()
+                cmd_parts = user_input.lower().split()
+                cmd = cmd_parts[0]
+                
                 if cmd == '/think':
                     boss.thinking_enabled = not boss.thinking_enabled
-                    print(f"{GRAY}[System] DeepThink -> {boss.thinking_enabled}{RESET}")
+                    state = f"{GREEN}ON{RESET}" if boss.thinking_enabled else f"{RED}OFF{RESET}"
+                    print(f"{GRAY}[System]{RESET} DeepThink → {state}")
                 elif cmd == '/search':
                     boss.search_enabled = not boss.search_enabled
-                    print(f"{GRAY}[System] Search -> {boss.search_enabled}{RESET}")
+                    state = f"{GREEN}ON{RESET}" if boss.search_enabled else f"{RED}OFF{RESET}"
+                    print(f"{GRAY}[System]{RESET} Web Search → {state}")
                 elif cmd == '/expert':
                     boss.model_class = "deepseek_reasoner"
-                    print(f"{GRAY}[System] Model -> EXPERT{RESET}")
+                    print(f"{GRAY}[System]{RESET} Model → {RED}EXPERT{RESET}")
                 elif cmd == '/instant':
                     boss.model_class = "deepseek_chat"
-                    print(f"{GRAY}[System] Model -> INSTANT{RESET}")
+                    print(f"{GRAY}[System]{RESET} Model → {GREEN}INSTANT{RESET}")
                 elif cmd == '/swarm':
                     swarm_mode = not swarm_mode
-                    print(f"{GRAY}[System] Swarm Mode -> {swarm_mode}{RESET}")
+                    state = f"{GREEN}ON{RESET}" if swarm_mode else f"{RED}OFF{RESET}"
+                    print(f"{GRAY}[System]{RESET} Swarm Mode → {state} {GRAY}({num_workers} workers){RESET}")
+                elif cmd == '/agents':
+                    if len(cmd_parts) > 1:
+                        try:
+                            n = int(cmd_parts[1])
+                            if 2 <= n <= 6:
+                                num_workers = n
+                                print(f"{GRAY}[System]{RESET} Swarm workers → {MAGENTA}{num_workers}{RESET}")
+                            else:
+                                print(f"{RED}[System] Workers must be between 2-6{RESET}")
+                        except ValueError:
+                            print(f"{RED}[System] Usage: /agents 4{RESET}")
+                    else:
+                        print(f"{GRAY}[System] Current workers: {num_workers}. Usage: /agents N (2-6){RESET}")
+                elif cmd == '/help':
+                    print(f"""
+{WHITE}{BOLD}Toggle Commands:{RESET}
+  {YELLOW}/think{RESET}       Toggle DeepThink     {YELLOW}/search{RESET}      Toggle Search
+  {YELLOW}/expert{RESET}      Expert model          {YELLOW}/instant{RESET}     Instant model
+{WHITE}{BOLD}Swarm:{RESET}
+  {MAGENTA}/swarm{RESET}       Toggle swarm          {MAGENTA}/agents N{RESET}    Set workers (2-6)
+{WHITE}{BOLD}Session:{RESET}
+  {RED}/exit{RESET}        Quit & cleanup        {CYAN}/help{RESET}         This menu""")
                 else:
-                    print(f"{RED}[System] Unknown command: {cmd}{RESET}")
+                    print(f"{RED}[System] Unknown: {cmd}. Type /help{RESET}")
                 continue
             
+            # Track conversation for context
+            conversation_context.append(f"User: {user_input}")
+            
             if swarm_mode:
-                print(f"{MAGENTA}[Swarm] Dispatching task to 4 Expert Workers...{RESET}")
-                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                    futures = [executor.submit(worker_task, i, user_input) for i in range(4)]
-                    
-                    # Simple spinner while waiting
-                    spinners = ['|', '/', '-', '\\']
-                    idx = 0
-                    while not all(f.done() for f in futures):
-                        print(f"\r{GRAY}Workers are brainstorming... {spinners[idx % 4]}{RESET}", end='', flush=True)
-                        idx += 1
-                        time.sleep(0.1)
-                    print(f"\r{GREEN}[Swarm] 4 Experts responded! Boss is synthesizing final answer...{RESET}\n")
-                    
-                    responses = [f.result() for f in futures]
+                # Build context summary from last few exchanges (max ~2000 chars)
+                context_summary = "\n".join(conversation_context[-6:])
+                if len(context_summary) > 2000:
+                    context_summary = context_summary[-2000:]
                 
-                boss_prompt = f"The user asked: '{user_input}'.\nHere are 4 perspectives from your expert workers:\n"
-                for i, r in enumerate(responses):
-                    boss_prompt += f"--- Expert {i+1} ---\n{r}\n\n"
-                boss_prompt += "Please review all of them, extract the best insights, and provide a single, beautifully synthesized ultimate answer to the user."
-                
-                boss.send_message(boss_prompt)
+                run_swarm(user_input, context_summary, boss, num_workers)
+                conversation_context.append(f"DeepSeek: [Swarm response provided]")
             else:
-                boss.send_message(user_input)
+                response = boss.send_message(user_input)
+                # Keep a short summary of the response for context
+                if response:
+                    summary = response[:300] + "..." if len(response) > 300 else response
+                    conversation_context.append(f"DeepSeek: {summary}")
+            
+            # Keep context window manageable (last 10 exchanges)
+            if len(conversation_context) > 20:
+                conversation_context = conversation_context[-20:]
             
         except KeyboardInterrupt:
             print(f"\n{YELLOW}Interrupted. Exiting...{RESET}")
