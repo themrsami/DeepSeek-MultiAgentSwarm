@@ -91,3 +91,18 @@ def chat_endpoint(req: ChatRequest):
 if __name__ == "__main__":
     print("Starting API Server on http://localhost:8000")
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+
+@app.delete('/chats')
+def delete_all_chats():
+    global boss_agent
+    if not load_auth():
+        raise HTTPException(status_code=401, detail='Not authenticated. Run CLI and type /login')
+    if boss_agent is None:
+        boss_agent = DeepSeekAgent(name='Boss')
+        boss_agent.init_session(silent=True)
+    success = boss_agent.delete_all_chats()
+    if success:
+        return {'status': 'success', 'message': 'All chats have been permanently deleted.'}
+    else:
+        raise HTTPException(status_code=500, detail='Failed to delete chats. Token might be expired.')
+

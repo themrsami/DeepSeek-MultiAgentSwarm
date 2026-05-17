@@ -91,3 +91,15 @@ for worker in data["data"]["worker_responses"]:
 ## 5. Notes & Limitations
 - **Timeout:** Swarm mode with 4+ workers can take 30-60 seconds to process. Ensure your frontend HTTP client does not timeout prematurely.
 - **Context:** The API is stateless. It does not remember past messages. You must send previous conversation history via the `context_summary` field.
+
+### Delete All Chats
+- **Endpoint:** `DELETE /chats`
+- **Description:** Permanently deletes all chat history from your DeepSeek account (Data Controls).
+- **Response:**
+  ``json
+  {
+    "status": "success",
+    "message": "All chats have been permanently deleted."
+  }
+  ``
+

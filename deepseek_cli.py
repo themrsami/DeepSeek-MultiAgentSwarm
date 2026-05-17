@@ -127,6 +127,13 @@ class DeepSeekAgent:
         active_sessions.append(self.session_id)
         self.parent_msg_id = None
 
+    def delete_all_chats(self):
+        try:
+            res = self.req_session.post('https://chat.deepseek.com/api/v0/chat_session/delete_all', headers=self.headers, cookies=self.cookies, timeout=10)
+            return res.status_code == 200
+        except Exception:
+            return False
+
     def send_message(self, prompt, return_text=False):
         self.headers['x-ds-pow-response'] = self._get_pow_header()
         
@@ -343,7 +350,10 @@ def interactive_cli():
   {MAGENTA}/swarm{RESET}       Toggle multi-agent swarm mode
   {MAGENTA}/agents N{RESET}    Set number of swarm workers (2-6)
 
-{WHITE}{BOLD}Session:{RESET}
+{WHITE}{BOLD}Session & Data:{RESET}
+  {GREEN}/login{RESET}       Login via Browser
+  {RED}/logout{RESET}      Logout and remove credentials
+  {RED}/clearall{RESET}    Delete all chats from DeepSeek account
   {RED}/exit{RESET}        Quit & auto-delete all sessions
   {CYAN}/help{RESET}        Show this menu again
 
@@ -436,7 +446,8 @@ def interactive_cli():
   {MAGENTA}/swarm{RESET}       Toggle swarm          {MAGENTA}/agents N{RESET}    Set workers (2-6)
 {WHITE}{BOLD}Session & Auth:{RESET}
   {GREEN}/login{RESET}       Login via Browser     {RED}/logout{RESET}       Logout
-  {RED}/exit{RESET}        Quit & cleanup        {CYAN}/help{RESET}         This menu""")
+  {RED}/clearall{RESET}    Clear all chats       {RED}/exit{RESET}        Quit & cleanup
+  {CYAN}/help{RESET}         This menu""")
                 elif cmd == '/login':
                     if interactive_login():
                         # Re-initialize Boss
@@ -444,11 +455,22 @@ def interactive_cli():
                         boss.init_session(silent=True)
                         print(f"{GREEN}[System] Boss agent ready!{RESET}")
                 elif cmd == '/logout':
-                    if logout():
-                        print(f"{GREEN}[System] Logged out successfully. Credentials deleted.{RESET}")
-                        boss = None
-                    else:
-                        print(f"{YELLOW}[System] You are not logged in.{RESET}")
+                    save_auth(None)
+                    boss = None
+                    print(f"{GREEN}[Success] Logged out successfully. Credentials removed.{RESET}")
+                    print(f"{GRAY}Type /login to re-authenticate.{RESET}")
+                elif cmd == '/clearall':
+                    if boss is None:
+                        print(f"{RED}[Error] You must be logged in to clear chats.{RESET}")
+                        continue
+                    confirm = input(f"{RED}Are you sure you want to permanently delete ALL chats from your DeepSeek account? (y/n): {RESET}")
+                    if confirm.lower() == 'y':
+                        print(f"{YELLOW}Deleting all chats...{RESET}")
+                        success = boss.delete_all_chats()
+                        if success:
+                            print(f"{GREEN}[Success] All chat history has been permanently deleted.{RESET}")
+                        else:
+                            print(f"{RED}[Error] Failed to delete chats. Token might be expired.{RESET}")
                 else:
                     print(f"{RED}[System] Unknown: {cmd}. Type /help{RESET}")
                 continue
