@@ -193,16 +193,45 @@ WORKER_PERSPECTIVES = [
     "You are the STRATEGIC expert. Think long-term. Consider scalability, future implications, and big-picture planning.",
 ]
 
-def run_worker(worker_id, total_workers, prompt, context_summary, on_complete_callback):
-    """Each worker runs in its own thread with its own DeepSeek session."""
-    perspective = WORKER_PERSPECTIVES[worker_id % len(WORKER_PERSPECTIVES)]
+WORKER_COLORS = [GREEN, CYAN, YELLOW, MAGENTA, BLUE, RED]
+
+
+def run_swarm(prompt, context_summary, boss_agent, num_workers=4):
+    """Orchestrate the full Boss & Workers swarm pipeline.
     
-    agent = DeepSeekAgent(name=f"Worker-{worker_id+1}")
-    agent.model_class = "deepseek_chat"  # Instant mode for speed
-    agent.init_session(silent=True)
+    Architecture fix: Sessions and POW challenges are created SEQUENTIALLY
+    to avoid DeepSeek's rate-limiter silently dropping requests.
+    Only the actual chat completions run in PARALLEL.
+    """
     
-    # Build worker prompt WITH conversation context
-    worker_prompt = f"""You are Worker {worker_id+1} of {total_workers} in a multi-agent analysis team.
+    print(f"\n{MAGENTA}{BOLD}╔══════════════════════════════════════╗{RESET}")
+    print(f"{MAGENTA}{BOLD}║       SWARM MODE ACTIVATED           ║{RESET}")
+    print(f"{MAGENTA}{BOLD}╚══════════════════════════════════════╝{RESET}")
+    
+    # ── Phase 1: Create all worker agents SEQUENTIALLY ──
+    print(f"{GRAY}  Phase 1: Preparing {num_workers} workers...{RESET}")
+    
+    workers = []
+    worker_prompts = []
+    for i in range(num_workers):
+        color = WORKER_COLORS[i % len(WORKER_COLORS)]
+        perspective = WORKER_PERSPECTIVES[i % len(WORKER_PERSPECTIVES)]
+        
+        agent = DeepSeekAgent(name=f"Worker-{i+1}")
+        agent.model_class = "deepseek_chat"
+        
+        # Sequential session creation (prevents rate-limit drops)
+        print(f"{color}    ● Worker-{i+1}: Creating session...{RESET}", end='', flush=True)
+        agent.init_session(silent=True)
+        print(f" {GREEN}✓{RESET}", flush=True)
+        
+        # Sequential POW (prevents challenge conflicts)
+        print(f"{color}    ● Worker-{i+1}: Solving POW challenge...{RESET}", end='', flush=True)
+        agent.headers['x-ds-pow-response'] = agent._get_pow_header()
+        print(f" {GREEN}✓{RESET}", flush=True)
+        
+        # Build prompt with context
+        worker_prompt = f"""You are Worker {i+1} of {num_workers} in a multi-agent analysis team.
 {perspective}
 
 CONVERSATION CONTEXT (what the user discussed before):
@@ -212,61 +241,110 @@ USER'S CURRENT REQUEST:
 {prompt}
 
 Provide your expert analysis. Be concise but thorough (max 500 words). Do NOT repeat the question back."""
-
-    result = agent.send_message(worker_prompt, return_text=True)
+        
+        workers.append(agent)
+        worker_prompts.append(worker_prompt)
     
-    # Truncate if too long
-    if len(result) > MAX_WORKER_RESPONSE_CHARS:
-        result = result[:MAX_WORKER_RESPONSE_CHARS] + "\n...[truncated for brevity]"
+    print(f"\n{GREEN}{BOLD}  Phase 1 Complete! All {num_workers} workers ready.{RESET}")
     
-    # Callback to notify main thread
-    on_complete_callback(worker_id, result)
-    return result
-
-
-def run_swarm(prompt, context_summary, boss_agent, num_workers=4):
-    """Orchestrate the full Boss & Workers swarm pipeline."""
+    # ── Phase 2: Dispatch ALL completions in PARALLEL ──
+    print(f"{CYAN}  Phase 2: All workers thinking simultaneously...{RESET}\n")
     
     completed = []
     completion_lock = threading.Lock()
     
-    def on_worker_done(worker_id, result):
+    def send_worker_message(worker_id):
+        """Send the pre-prepared prompt (session + POW already done)."""
+        agent = workers[worker_id]
+        json_data = {
+            'chat_session_id': agent.session_id,
+            'parent_message_id': agent.parent_msg_id,
+            'prompt': worker_prompts[worker_id],
+            'ref_file_ids': [],
+            'thinking_enabled': False,
+            'search_enabled': False,
+            'model_class': agent.model_class
+        }
+        
+        full_response = ""
+        try:
+            response = agent.req_session.post(
+                "https://chat.deepseek.com/api/v0/chat/completion",
+                headers=agent.headers, json=json_data,
+                cookies=agent.cookies, stream=True, timeout=60
+            )
+            if response.status_code != 200:
+                return f"[Error] Worker-{worker_id+1} got status {response.status_code}"
+            
+            current_pointer = "response/content"
+            for line in response.iter_lines():
+                if line:
+                    try:
+                        line_str = line.decode('utf-8')
+                        if line_str.startswith('data: '):
+                            payload = line_str[6:]
+                            if payload == "{}": continue
+                            data = json.loads(payload)
+                            if "p" in data:
+                                current_pointer = data["p"]
+                            if "v" in data and current_pointer == "response/content":
+                                content = data["v"]
+                                if isinstance(content, str):
+                                    full_response += content
+                    except:
+                        pass
+        except Exception as e:
+            return f"[Error] Worker-{worker_id+1}: {e}"
+        
+        # Truncate if too long
+        if len(full_response) > MAX_WORKER_RESPONSE_CHARS:
+            full_response = full_response[:MAX_WORKER_RESPONSE_CHARS] + "\n...[truncated]"
+        
+        # Real-time notification
         with completion_lock:
             completed.append(worker_id)
             count = len(completed)
+        color = WORKER_COLORS[worker_id % len(WORKER_COLORS)]
+        resp_preview = full_response[:80].replace('\n', ' ') + "..." if len(full_response) > 80 else full_response.replace('\n', ' ')
         with print_lock:
-            color = [GREEN, CYAN, YELLOW, MAGENTA, BLUE, RED][worker_id % 6]
-            print(f"\r{color}  ✓ Worker-{worker_id+1} responded! ({count}/{num_workers} done){RESET}          ", flush=True)
-    
-    # Phase 1: Dispatch workers
-    print(f"\n{MAGENTA}{BOLD}╔══════════════════════════════════════╗{RESET}")
-    print(f"{MAGENTA}{BOLD}║       SWARM MODE ACTIVATED           ║{RESET}")
-    print(f"{MAGENTA}{BOLD}╚══════════════════════════════════════╝{RESET}")
-    print(f"{GRAY}  Dispatching {num_workers} Expert Workers...{RESET}")
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = [
-            executor.submit(run_worker, i, num_workers, prompt, context_summary, on_worker_done) 
-            for i in range(num_workers)
-        ]
+            print(f"  {color}✓ Worker-{worker_id+1} responded ({count}/{num_workers}){RESET} {GRAY}→ {resp_preview}{RESET}", flush=True)
         
-        # Show live spinner while waiting
+        return full_response
+    
+    # Fire all completions at once (sessions/POW already prepared)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = {executor.submit(send_worker_message, i): i for i in range(num_workers)}
+        
+        # Spinner while waiting
         spinners = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏']
         idx = 0
         while not all(f.done() for f in futures):
             with print_lock:
                 done_count = len(completed)
-                print(f"\r{GRAY}  {spinners[idx % len(spinners)]} Workers brainstorming... ({done_count}/{num_workers}){RESET}   ", end='', flush=True)
+                print(f"\r{GRAY}  {spinners[idx % len(spinners)]} Workers thinking... ({done_count}/{num_workers} done){RESET}   ", end='', flush=True)
             idx += 1
             time.sleep(0.08)
+        print(f"\r{' '*60}\r", end='', flush=True)  # Clear spinner line
         
-        responses = [f.result() for f in futures]
+        responses = [futures_obj.result() for futures_obj in futures]
+        # Re-order by worker_id
+        ordered_responses = [""] * num_workers
+        for future_obj, worker_id in futures.items():
+            ordered_responses[worker_id] = future_obj.result()
     
-    # Phase 2: Boss synthesizes
-    print(f"\n{GREEN}{BOLD}  ✓ All {num_workers} Workers done!{RESET}")
-    print(f"{YELLOW}{BOLD}  ⚡ Boss Agent is synthesizing the final answer...{RESET}\n")
+    # ── Phase 3: Boss synthesizes ──
+    print(f"\n{GREEN}{BOLD}  ✓ All {num_workers} Workers responded!{RESET}")
     
-    # Build boss prompt with length awareness
+    # Show worker response lengths
+    for i, r in enumerate(ordered_responses):
+        color = WORKER_COLORS[i % len(WORKER_COLORS)]
+        char_count = len(r)
+        status = f"{GREEN}OK{RESET}" if char_count > 50 else f"{RED}EMPTY/FAILED{RESET}"
+        print(f"  {color}  Worker-{i+1}: {char_count} chars [{status}]{RESET}")
+    
+    print(f"\n{YELLOW}{BOLD}  ⚡ Boss Agent is synthesizing the final answer...{RESET}\n")
+    
+    # Build boss prompt
     boss_prompt = f"""You are the BOSS agent in a multi-agent swarm system.
 
 The user asked: "{prompt}"
@@ -274,8 +352,12 @@ The user asked: "{prompt}"
 Your {num_workers} expert workers have analyzed this from different angles. Here are their responses:
 
 """
-    for i, r in enumerate(responses):
-        boss_prompt += f"═══ WORKER {i+1} ({WORKER_PERSPECTIVES[i % len(WORKER_PERSPECTIVES)].split('.')[0].replace('You are the ', '')}) ═══\n{r}\n\n"
+    for i, r in enumerate(ordered_responses):
+        label = WORKER_PERSPECTIVES[i % len(WORKER_PERSPECTIVES)].split('.')[0].replace('You are the ', '')
+        if len(r) > 50:
+            boss_prompt += f"═══ WORKER {i+1} ({label}) ═══\n{r}\n\n"
+        else:
+            boss_prompt += f"═══ WORKER {i+1} ({label}) ═══\n[This worker failed to respond]\n\n"
     
     boss_prompt += f"""═══ YOUR TASK ═══
 1. Review ALL {num_workers} worker responses carefully.
@@ -285,11 +367,9 @@ Your {num_workers} expert workers have analyzed this from different angles. Here
 5. Add any critical points the workers may have missed.
 Do NOT mention that you are a boss or that workers exist. Just give the user the best possible answer directly."""
 
-    # Check total prompt size
     total_chars = len(boss_prompt)
     if total_chars > 30000:
-        with print_lock:
-            print(f"{YELLOW}  [Warning] Boss prompt is {total_chars} chars. Responses were auto-truncated.{RESET}")
+        print(f"{YELLOW}  [Warning] Boss prompt is {total_chars} chars.{RESET}")
     
     boss_agent.send_message(boss_prompt)
 
