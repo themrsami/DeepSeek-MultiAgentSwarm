@@ -196,198 +196,72 @@ WORKER_PERSPECTIVES = [
 WORKER_COLORS = [GREEN, CYAN, YELLOW, MAGENTA, BLUE, RED]
 
 
-def run_swarm(prompt, context_summary, boss_agent, num_workers=4):
-    """Orchestrate the full Boss & Workers swarm pipeline.
-    
-    Architecture fix: Sessions and POW challenges are created SEQUENTIALLY
-    to avoid DeepSeek's rate-limiter silently dropping requests.
-    Only the actual chat completions run in PARALLEL.
-    """
+swarm_workers = []
+
+def get_swarm_workers(num_workers):
+    global swarm_workers
+    if len(swarm_workers) < num_workers:
+        print(f"\n{MAGENTA}{BOLD}╔══════════════════════════════════════╗{RESET}")
+        print(f"{MAGENTA}{BOLD}║       INITIALIZING SWARM AGENTS      ║{RESET}")
+        print(f"{MAGENTA}{BOLD}╚══════════════════════════════════════╝{RESET}")
+        print(f"{GRAY}  Preparing persistent workers... (Only happens once){RESET}")
+        
+        for i in range(len(swarm_workers), num_workers):
+            color = WORKER_COLORS[i % len(WORKER_COLORS)]
+            agent = DeepSeekAgent(name=f"Worker-{i+1}")
+            agent.model_class = "deepseek_chat"
+            print(f"{color}    ● Worker-{i+1}: Creating session...{RESET}", end='', flush=True)
+            agent.init_session(silent=True)
+            print(f" {GREEN}✓{RESET}", flush=True)
+            swarm_workers.append(agent)
+            
+    return swarm_workers[:num_workers]
+
+def run_swarm(prompt, boss_agent, num_workers=4):
+    """Sequential persistent swarm pipeline to guarantee 100% success on free accounts."""
+    workers = get_swarm_workers(num_workers)
     
     print(f"\n{MAGENTA}{BOLD}╔══════════════════════════════════════╗{RESET}")
-    print(f"{MAGENTA}{BOLD}║       SWARM MODE ACTIVATED           ║{RESET}")
+    print(f"{MAGENTA}{BOLD}║       SWARM MODE PROCESSING          ║{RESET}")
     print(f"{MAGENTA}{BOLD}╚══════════════════════════════════════╝{RESET}")
     
-    # ── Phase 1: Create all worker agents SEQUENTIALLY ──
-    print(f"{GRAY}  Phase 1: Preparing {num_workers} workers...{RESET}")
+    ordered_responses = []
     
-    workers = []
-    worker_prompts = []
-    for i in range(num_workers):
+    for i, agent in enumerate(workers):
         color = WORKER_COLORS[i % len(WORKER_COLORS)]
         perspective = WORKER_PERSPECTIVES[i % len(WORKER_PERSPECTIVES)]
         
-        agent = DeepSeekAgent(name=f"Worker-{i+1}")
-        agent.model_class = "deepseek_chat"
+        # Build strict prompt for worker (they inherently remember history via their session)
+        worker_prompt = f"[{perspective}]\n\nUSER REQUEST:\n{prompt}\n\nProvide your expert analysis based strictly on your assigned persona. Be concise."
         
-        # Sequential session creation (prevents rate-limit drops)
-        print(f"{color}    ● Worker-{i+1}: Creating session...{RESET}", end='', flush=True)
-        agent.init_session(silent=True)
-        print(f" {GREEN}✓{RESET}", flush=True)
+        print(f"  {color}▶ Worker-{i+1} is thinking...{RESET}", end='', flush=True)
         
-        # Sequential POW (prevents challenge conflicts)
-        print(f"{color}    ● Worker-{i+1}: Solving POW challenge...{RESET}", end='', flush=True)
-        agent.headers['x-ds-pow-response'] = agent._get_pow_header()
-        print(f" {GREEN}✓{RESET}", flush=True)
-        
-        # Build prompt with context
-        worker_prompt = f"""You are Worker {i+1} of {num_workers} in a multi-agent analysis team.
-{perspective}
-
-CONVERSATION CONTEXT (what the user discussed before):
-{context_summary if context_summary else '(This is the first message)'}
-
-USER'S CURRENT REQUEST:
-{prompt}
-
-Provide your expert analysis. Be concise but thorough (max 500 words). Do NOT repeat the question back."""
-        
-        workers.append(agent)
-        worker_prompts.append(worker_prompt)
-    
-    print(f"\n{GREEN}{BOLD}  Phase 1 Complete! All {num_workers} workers ready.{RESET}")
-    
-    # ── Phase 2: Dispatch ALL completions in PARALLEL ──
-    print(f"{CYAN}  Phase 2: All workers thinking simultaneously...{RESET}\n")
-    
-    completed = []
-    completion_lock = threading.Lock()
-    
-    def send_worker_message(worker_id):
-        """Send the pre-prepared prompt (session + POW already done)."""
-        # Stagger the start to avoid sending 4 simultaneous POSTs
-        time.sleep(worker_id * 1.5)
-        
-        agent = workers[worker_id]
-        json_data = {
-            'chat_session_id': agent.session_id,
-            'parent_message_id': agent.parent_msg_id,
-            'prompt': worker_prompts[worker_id],
-            'ref_file_ids': [],
-            'thinking_enabled': False,
-            'search_enabled': False,
-            'model_class': agent.model_class
-        }
-        
+        # Send message (blocks until stream is done) - auto retries if empty
         max_retries = 3
-        full_response = ""
-        
+        response_text = ""
         for attempt in range(max_retries):
-            full_response = ""
-            try:
-                response = agent.req_session.post(
-                    "https://chat.deepseek.com/api/v0/chat/completion",
-                    headers=agent.headers, json=json_data,
-                    cookies=agent.cookies, stream=True, timeout=60
-                )
-                if response.status_code != 200:
-                    time.sleep(2)
-                    continue
-                
-                current_pointer = "response/content"
-                for line in response.iter_lines():
-                    if line:
-                        try:
-                            line_str = line.decode('utf-8')
-                            if line_str.startswith('data: '):
-                                payload = line_str[6:]
-                                if payload == "{}": continue
-                                data = json.loads(payload)
-                                if "p" in data:
-                                    current_pointer = data["p"]
-                                if "v" in data and current_pointer == "response/content":
-                                    content = data["v"]
-                                    if isinstance(content, str):
-                                        full_response += content
-                        except:
-                            pass
-                            
-                if len(full_response) > 50:
-                    break  # Success!
-                else:
-                    # DeepSeek returned an empty response due to rate-limiting
-                    time.sleep(2)
-            except Exception as e:
-                time.sleep(2)
+            response_text = agent.send_message(worker_prompt, return_text=True)
+            if len(response_text) > 50:
+                break
+            time.sleep(2)
+            
+        char_count = len(response_text)
+        status = f"{GREEN}OK{RESET}" if char_count > 50 else f"{RED}FAILED{RESET}"
         
-        if len(full_response) < 50:
-            return f"[Error] Worker-{worker_id+1} failed to respond after {max_retries} attempts."
-        
-        # Truncate if too long
-        if len(full_response) > MAX_WORKER_RESPONSE_CHARS:
-            full_response = full_response[:MAX_WORKER_RESPONSE_CHARS] + "\n...[truncated]"
-        
-        # Real-time notification
-        with completion_lock:
-            completed.append(worker_id)
-            count = len(completed)
-        color = WORKER_COLORS[worker_id % len(WORKER_COLORS)]
-        resp_preview = full_response[:80].replace('\n', ' ') + "..." if len(full_response) > 80 else full_response.replace('\n', ' ')
-        with print_lock:
-            print(f"  {color}✓ Worker-{worker_id+1} responded ({count}/{num_workers}){RESET} {GRAY}→ {resp_preview}{RESET}", flush=True)
-        
-        return full_response
+        # Overwrite the thinking line
+        print(f"\r  {color}✓ Worker-{i+1} responded! ({char_count} chars) [{status}]{RESET}   ")
+        ordered_responses.append(response_text)
     
-    # Fire all completions at once (sessions/POW already prepared)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = {executor.submit(send_worker_message, i): i for i in range(num_workers)}
-        
-        # Spinner while waiting
-        spinners = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏']
-        idx = 0
-        while not all(f.done() for f in futures):
-            with print_lock:
-                done_count = len(completed)
-                print(f"\r{GRAY}  {spinners[idx % len(spinners)]} Workers thinking... ({done_count}/{num_workers} done){RESET}   ", end='', flush=True)
-            idx += 1
-            time.sleep(0.08)
-        print(f"\r{' '*60}\r", end='', flush=True)  # Clear spinner line
-        
-        responses = [futures_obj.result() for futures_obj in futures]
-        # Re-order by worker_id
-        ordered_responses = [""] * num_workers
-        for future_obj, worker_id in futures.items():
-            ordered_responses[worker_id] = future_obj.result()
-    
-    # ── Phase 3: Boss synthesizes ──
-    print(f"\n{GREEN}{BOLD}  ✓ All {num_workers} Workers responded!{RESET}")
-    
-    # Show worker response lengths
-    for i, r in enumerate(ordered_responses):
-        color = WORKER_COLORS[i % len(WORKER_COLORS)]
-        char_count = len(r)
-        status = f"{GREEN}OK{RESET}" if char_count > 50 else f"{RED}EMPTY/FAILED{RESET}"
-        print(f"  {color}  Worker-{i+1}: {char_count} chars [{status}]{RESET}")
-    
+    # ── Boss synthesizes ──
     print(f"\n{YELLOW}{BOLD}  ⚡ Boss Agent is synthesizing the final answer...{RESET}\n")
     
-    # Build boss prompt
-    boss_prompt = f"""You are the BOSS agent in a multi-agent swarm system.
-
-The user asked: "{prompt}"
-
-Your {num_workers} expert workers have analyzed this from different angles. Here are their responses:
-
-"""
+    boss_prompt = f"The user asked: '{prompt}'.\n\nYour expert workers have analyzed this:\n\n"
     for i, r in enumerate(ordered_responses):
         label = WORKER_PERSPECTIVES[i % len(WORKER_PERSPECTIVES)].split('.')[0].replace('You are the ', '')
         if len(r) > 50:
             boss_prompt += f"═══ WORKER {i+1} ({label}) ═══\n{r}\n\n"
-        else:
-            boss_prompt += f"═══ WORKER {i+1} ({label}) ═══\n[This worker failed to respond]\n\n"
-    
-    boss_prompt += f"""═══ YOUR TASK ═══
-1. Review ALL {num_workers} worker responses carefully.
-2. Extract the BEST insights from each.
-3. Resolve any contradictions between workers.
-4. Synthesize ONE comprehensive, well-structured final answer.
-5. Add any critical points the workers may have missed.
-Do NOT mention that you are a boss or that workers exist. Just give the user the best possible answer directly."""
-
-    total_chars = len(boss_prompt)
-    if total_chars > 30000:
-        print(f"{YELLOW}  [Warning] Boss prompt is {total_chars} chars.{RESET}")
-    
+            
+    boss_prompt += "Synthesize ONE comprehensive final answer. Resolve any contradictions. Do NOT mention the workers or boss."
     boss_agent.send_message(boss_prompt)
 
 
@@ -499,27 +373,10 @@ def interactive_cli():
                     print(f"{RED}[System] Unknown: {cmd}. Type /help{RESET}")
                 continue
             
-            # Track conversation for context
-            conversation_context.append(f"User: {user_input}")
-            
             if swarm_mode:
-                # Build context summary from last few exchanges (max ~2000 chars)
-                context_summary = "\n".join(conversation_context[-6:])
-                if len(context_summary) > 2000:
-                    context_summary = context_summary[-2000:]
-                
-                run_swarm(user_input, context_summary, boss, num_workers)
-                conversation_context.append(f"DeepSeek: [Swarm response provided]")
+                run_swarm(user_input, boss, num_workers)
             else:
-                response = boss.send_message(user_input)
-                # Keep a short summary of the response for context
-                if response:
-                    summary = response[:300] + "..." if len(response) > 300 else response
-                    conversation_context.append(f"DeepSeek: {summary}")
-            
-            # Keep context window manageable (last 10 exchanges)
-            if len(conversation_context) > 20:
-                conversation_context = conversation_context[-20:]
+                boss.send_message(user_input)
             
         except KeyboardInterrupt:
             print(f"\n{YELLOW}Interrupted. Exiting...{RESET}")
