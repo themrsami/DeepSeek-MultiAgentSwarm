@@ -61,27 +61,33 @@ def interactive_login():
         
         while time.time() - start_time < timeout:
             try:
-                # We search all localStorage keys to find the one containing a Bearer token
+                # Poll localStorage for the userToken key
                 ls_data = page.evaluate("() => JSON.stringify(localStorage)")
                 if ls_data:
                     ls_dict = json.loads(ls_data)
-                    for key, val in ls_dict.items():
-                        if "Bearer ey" in str(val):
-                            # It could be a direct string or a JSON object string
-                            if isinstance(val, str) and val.startswith('{"'):
-                                try:
-                                    parsed_val = json.loads(val)
-                                    if "value" in parsed_val and "Bearer " in parsed_val["value"]:
-                                        extracted_token = parsed_val["value"]
-                                        break
-                                except:
-                                    pass
-                            elif "Bearer ey" in val:
+                    
+                    # DeepSeek uses 'userToken' as the key
+                    if "userToken" in ls_dict:
+                        val = ls_dict["userToken"]
+                        # The value is usually a JSON string: {"value":"TOKEN_STRING", "expire":...}
+                        if isinstance(val, str) and val.startswith('{'):
+                            try:
+                                parsed_val = json.loads(val)
+                                if "value" in parsed_val and parsed_val["value"]:
+                                    extracted_token = parsed_val["value"]
+                            except:
                                 extracted_token = val
-                                break
-                                
-                if extracted_token:
-                    break
+                        elif val and val != "null" and val != '""':
+                            extracted_token = val
+                            
+                        if extracted_token and len(str(extracted_token)) > 10 and extracted_token != "null":
+                            # Strip "Bearer " if it is included
+                            if isinstance(extracted_token, str):
+                                extracted_token = extracted_token.replace("Bearer ", "").strip()
+                            break
+                        else:
+                            extracted_token = None
+                            
             except Exception as e:
                 pass
                 
