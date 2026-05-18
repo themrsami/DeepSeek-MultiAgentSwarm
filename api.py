@@ -105,17 +105,7 @@ def delete_all_chats():
         raise HTTPException(status_code=500, detail="Failed to delete chats. Token might be expired.")
 
 # ─── OpenAI-Compatible Endpoint (/v1/chat/completions) ───
-
-class OAIMessage(BaseModel):
-    role: str
-    content: str
-
-class OAIRequest(BaseModel):
-    model: str = "deepseek-chat"
-    messages: List[OAIMessage]
-    stream: bool = False
-    temperature: Optional[float] = 0.7
-    max_tokens: Optional[int] = 4096
+from fastapi import Request
 
 @app.get("/v1/models")
 def list_models():
@@ -129,7 +119,7 @@ def list_models():
     }
 
 @app.post("/v1/chat/completions")
-def openai_chat_completions(req: OAIRequest):
+async def openai_chat_completions(req: Request):
     global boss_agent
     
     if not load_auth():
@@ -139,8 +129,17 @@ def openai_chat_completions(req: OAIRequest):
         boss_agent = DeepSeekAgent(name="Boss")
         boss_agent.init_session(silent=True)
 
+    try:
+        data = await req.json()
+    except:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    model_name = data.get("model", "deepseek-chat")
+    messages = data.get("messages", [])
+    stream = data.get("stream", False)
+
     # Map model name
-    if "reasoner" in req.model or "r1" in req.model.lower():
+    if "reasoner" in model_name or "r1" in model_name.lower():
         boss_agent.model_class = "deepseek_reasoner"
         boss_agent.thinking_enabled = True
     else:
@@ -151,42 +150,58 @@ def openai_chat_completions(req: OAIRequest):
 
     # Convert messages array to single prompt (OpenAI -> DeepSeek)
     prompt_parts = []
-    for msg in req.messages:
-        if msg.role == "system":
-            prompt_parts.insert(0, f"System Instructions: {msg.content}")
-        elif msg.role == "user":
-            prompt_parts.append(f"User: {msg.content}")
-        elif msg.role == "assistant":
-            prompt_parts.append(f"Assistant: {msg.content}")
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "system":
+            prompt_parts.insert(0, f"System Instructions: {content}")
+        elif role == "user":
+            prompt_parts.append(f"User: {content}")
+        elif role == "assistant":
+            prompt_parts.append(f"Assistant: {content}")
     
     final_prompt = "\n".join(prompt_parts)
     
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
-    if req.stream:
+    if stream:
         # ── SSE Streaming Response ──
         def stream_generator():
+            # Send initial chunk with role
+            init_data = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_name,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": ""},
+                    "finish_reason": None
+                }]
+            }
+            yield f"data: {json.dumps(init_data)}\n\n"
+
             for chunk in boss_agent.send_message_stream(final_prompt):
-                data = {
+                chunk_data = {
                     "id": completion_id,
                     "object": "chat.completion.chunk",
                     "created": created,
-                    "model": req.model,
+                    "model": model_name,
                     "choices": [{
                         "index": 0,
                         "delta": {"content": chunk},
                         "finish_reason": None
                     }]
                 }
-                yield f"data: {json.dumps(data)}\n\n"
+                yield f"data: {json.dumps(chunk_data)}\n\n"
             
             # Send the final [DONE] signal
             done_data = {
                 "id": completion_id,
                 "object": "chat.completion.chunk",
                 "created": created,
-                "model": req.model,
+                "model": model_name,
                 "choices": [{
                     "index": 0,
                     "delta": {},
@@ -204,7 +219,7 @@ def openai_chat_completions(req: OAIRequest):
             "id": completion_id,
             "object": "chat.completion",
             "created": created,
-            "model": req.model,
+            "model": model_name,
             "choices": [{
                 "index": 0,
                 "message": {
@@ -218,6 +233,60 @@ def openai_chat_completions(req: OAIRequest):
                 "completion_tokens": len(full_text.split()),
                 "total_tokens": len(final_prompt.split()) + len(full_text.split())
             }
+        }
+
+@app.post("/v1/completions")
+async def openai_completions(req: Request):
+    """Legacy completions endpoint used by Continue autocomplete."""
+    global boss_agent
+    if boss_agent is None:
+        boss_agent = DeepSeekAgent(name="Boss")
+        boss_agent.init_session(silent=True)
+        
+    try:
+        data = await req.json()
+    except:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    prompt = data.get("prompt", "")
+    stream = data.get("stream", False)
+    model_name = data.get("model", "deepseek-chat")
+    boss_agent.model_class = "deepseek_chat"
+    boss_agent.thinking_enabled = False
+
+    completion_id = f"cmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+
+    if stream:
+        def stream_generator():
+            for chunk in boss_agent.send_message_stream(prompt):
+                chunk_data = {
+                    "id": completion_id,
+                    "object": "text_completion",
+                    "created": created,
+                    "model": model_name,
+                    "choices": [{"text": chunk, "index": 0, "finish_reason": None}]
+                }
+                yield f"data: {json.dumps(chunk_data)}\n\n"
+            done_data = {
+                "id": completion_id,
+                "object": "text_completion",
+                "created": created,
+                "model": model_name,
+                "choices": [{"text": "", "index": 0, "finish_reason": "stop"}]
+            }
+            yield f"data: {json.dumps(done_data)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(stream_generator(), media_type="text/event-stream")
+    else:
+        full_text = boss_agent.send_message(prompt, return_text=True)
+        return {
+            "id": completion_id,
+            "object": "text_completion",
+            "created": created,
+            "model": model_name,
+            "choices": [{"text": full_text, "index": 0, "finish_reason": "stop"}]
         }
 
 if __name__ == "__main__":
