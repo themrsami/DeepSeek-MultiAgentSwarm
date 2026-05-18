@@ -225,6 +225,67 @@ class DeepSeekAgent:
 
 
 # ─────────────────────────────────────────────────────────
+
+    def send_message_stream(self, prompt):
+        """Generator that yields text chunks as they arrive from DeepSeek (for SSE streaming)."""
+        self.headers['x-ds-pow-response'] = self._get_pow_header()
+        
+        json_data = {
+            'chat_session_id': self.session_id,
+            'parent_message_id': self.parent_msg_id,
+            'prompt': prompt,
+            'ref_file_ids': [],
+            'thinking_enabled': self.thinking_enabled,
+            'search_enabled': self.search_enabled,
+            'model_class': self.model_class
+        }
+        
+        try:
+            response = self.req_session.post(
+                "https://chat.deepseek.com/api/v0/chat/completion",
+                headers=self.headers, json=json_data, cookies=self.cookies,
+                stream=True, timeout=120
+            )
+            if response.status_code != 200:
+                yield f"[Error] {response.status_code}: {response.text}"
+                return
+
+            current_response_id = None
+            current_pointer = "response/content"
+
+            for line in response.iter_lines():
+                if line:
+                    try:
+                        line_str = line.decode('utf-8')
+                        if line_str.startswith('data: '):
+                            payload = line_str[6:]
+                            if payload == "{}": continue
+                            data = __import__('json').loads(payload)
+                            
+                            if current_response_id is None and "response_message_id" in data:
+                                current_response_id = data["response_message_id"]
+                                
+                            if "p" in data:
+                                current_pointer = data["p"]
+                                
+                            if "v" in data:
+                                content = data["v"]
+                                if not isinstance(content, str): continue
+                                
+                                if current_pointer == "response/content":
+                                    yield content
+                                    
+                            if current_pointer == "response/message_id" and data.get("o") == "SET":
+                                current_response_id = data["v"]
+                    except Exception:
+                        pass
+                        
+            if current_response_id:
+                self.parent_msg_id = current_response_id
+                
+        except Exception as e:
+            yield f"[Connection Error] {e}"
+
 #  SWARM ORCHESTRATOR
 # ─────────────────────────────────────────────────────────
 

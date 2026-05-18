@@ -133,6 +133,65 @@ Now your API is permanently live at `https://your-custom-name.ngrok-free.app/cha
 
 ---
 
+## 🔌 Mode 3: OpenAI-Compatible Endpoint (Cursor / Claude Code)
+
+This API also exposes a **fully OpenAI-compatible** `/v1/chat/completions` endpoint with **SSE Streaming** support. This means you can use it as a drop-in replacement for OpenAI in any tool that supports custom API providers.
+
+#### List Models
+- **Endpoint:** `GET /v1/models`
+- **Response:** Returns `deepseek-chat` and `deepseek-reasoner`.
+
+#### Chat Completions (Streaming & Non-Streaming)
+- **Endpoint:** `POST /v1/chat/completions`
+- **Payload (OpenAI format):**
+  ```json
+  {
+    "model": "deepseek-chat",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "Write a Python function to sort a list."}
+    ],
+    "stream": true
+  }
+  ```
+- **Models:** Use `deepseek-chat` (Instant) or `deepseek-reasoner` (Expert/R1).
+
+### 🖥️ Setup in Cursor IDE
+1. Open **Cursor Settings** → **Models** → **Add Model**.
+2. Set:
+   - **Model Name:** `deepseek-chat`
+   - **API Base URL:** `http://localhost:8000/v1`  
+     *(or your ngrok URL: `https://your-name.ngrok-free.app/v1`)*
+   - **API Key:** `sk-anything` *(any non-empty string works, our server doesn't check keys)*
+3. Click **Save**. Now select `deepseek-chat` as your model in Cursor and start coding!
+
+### 🤖 Setup in Claude Code (CLI)
+Add this to your Claude Code config (or set environment variables):
+```bash
+export OPENAI_API_BASE="http://localhost:8000/v1"
+export OPENAI_API_KEY="sk-anything"
+export OPENAI_MODEL="deepseek-chat"
+```
+Or if using ngrok:
+```bash
+export OPENAI_API_BASE="https://your-name.ngrok-free.app/v1"
+export OPENAI_API_KEY="sk-anything"
+export OPENAI_MODEL="deepseek-chat"
+```
+
+### 🧪 Quick Test (curl)
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepseek-chat",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": false
+  }'
+```
+
+---
+
 ## 🧠 How Swarm Mode Works
 
 ```
@@ -162,3 +221,4 @@ Now your API is permanently live at `https://your-custom-name.ngrok-free.app/cha
 ## License
 
 MIT
+
