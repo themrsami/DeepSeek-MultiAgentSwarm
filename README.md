@@ -10,12 +10,6 @@ Bring the power of DeepSeek's Free Tier into your professional development workf
 
 ---
 
-## 🌟 Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=themrsami/DeepSeek-MultiAgentSwarm&type=Date)](https://star-history.com/#themrsami/DeepSeek-MultiAgentSwarm&Date)
-
----
-
 ## ✨ Comprehensive Feature List
 
 - **🔌 Drop-in OpenAI Compatibility:** Exposes a fully compatible `/v1/chat/completions` API (with SSE streaming and `/v1/completions` autocomplete support). Drop this directly into VS Code or Cursor as if you were using OpenAI's paid API.
@@ -241,6 +235,11 @@ If you are building custom tools, here is the full API surface provided by `api.
 - `DELETE /chats`: Privacy endpoint. Permanently wipes all chat history from your DeepSeek account to ensure your local queries aren't saved on their servers.
 
 ---
+
+## 🌟 Star History
+*(Note: If the graph image below appears broken, it means the repository is too new or currently has 0 stars. The graph will automatically render once the project receives its first few stars!)*
+
+[![Star History Chart](https://api.star-history.com/svg?repos=themrsami/DeepSeek-MultiAgentSwarm&type=Date)](https://star-history.com/#themrsami/DeepSeek-MultiAgentSwarm&Date)
 
 ## Contributing
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
