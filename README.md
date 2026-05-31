@@ -1,44 +1,97 @@
-# DeepSeek MultiAgent Swarm (CLI & API) 🧠🤖
+# 🧠 DeepSeek MultiAgent Swarm (CLI & Local API)
 
-A powerful, dual-mode system for interacting with DeepSeek AI. It features a **Stealth Auto-Login Authentication**, **Grok-style multi-agent orchestration**, a beautiful Terminal UI, and a fully functional **FastAPI REST server** for integrating DeepSeek into your own apps!
+A powerful, dual-mode system designed to interact with DeepSeek AI. It serves as an **OpenAI-compatible Local API** for your favorite coding editors (Cursor, VS Code, T3 Code) and acts as a **Grok-style multi-agent CLI** orchestrator in your terminal. 
 
-## ✨ Features
-
-- **Dual Mode Architecture** 🔄 – Run as a beautiful interactive Terminal CLI, or start the headless REST API server to consume it in your web/mobile apps.
-- **Stealth Playwright Login** 🕵️‍♂️ – Zero manual token extraction! Type `/login` to open a secure, Cloudflare-bypassing browser, log in normally, and the script auto-saves your encrypted tokens persistently.
-- **Grok-Style Swarm Mode** 🐝 – Multiple Worker agents brainstorm simultaneously, then a Boss agent synthesizes the ultimate, comprehensive answer.
-- **DeepThink (R1) & Web Search** 🔍 – Toggle deep reasoning mode or live internet search capabilities on the fly.
-- **Smart Data Controls** 🗑️ – Added a `/clearall` command (and API endpoint) to permanently wipe all chat history from your DeepSeek account to protect privacy.
-- **Color-Coded UI** 🎨 – High-quality ANSI-colored terminal interface using the `rich` library.
+Bring the power of DeepSeek's Free Tier into your professional development workflow with zero friction!
 
 ---
 
-## 🚀 Quick Start (Installation)
+## ✨ Key Features
+
+- **🔌 Drop-in OpenAI Compatibility:** Exposes a fully compatible `/v1/chat/completions` API (with SSE streaming and `/v1/completions` autocomplete support) that works instantly with VS Code, Cursor, and T3 Code.
+- **🕵️‍♂️ Stealth Auto-Login:** Zero manual token extraction! Use `/login` to open a secure browser, log in normally, and let the script handle Cloudflare bypass and session persistence.
+- **🐝 Grok-Style Swarm Mode:** (CLI Mode) Spawn multiple worker agents to brainstorm simultaneously while a Boss agent synthesizes the final comprehensive answer.
+- **🔍 DeepThink (R1) & Web Search:** Easily toggle DeepSeek's reasoning mode (R1) or live internet search capabilities.
+- **🗑️ Smart Data Controls:** Need privacy? Permanently wipe all chat history from your DeepSeek account with a single command or API call.
+- **🌍 Global Access (Ngrok):** Easily expose your local API to the web for mobile apps or external integrations.
+
+---
+
+## 🚀 Quick Start & Installation
 
 ### 1. Install Dependencies
+Make sure you have Python 3 installed. Then run:
 ```bash
 pip install -r requirements.txt
 playwright install chromium
 ```
 
-### 2. First-Time Setup (Login)
-You must log in at least once to generate the persistent `.ds_auth.json` credentials file.
+### 2. First-Time Authentication
+You must log in at least once so the script can save your session credentials (`.ds_auth.json`).
 ```bash
 python deepseek_cli.py
 ```
-*Inside the CLI, type `/login` and follow the browser prompts.*
+*Once the CLI starts, type `/login` and follow the browser prompts to log into your DeepSeek account.*
 
 ---
 
-## 💻 Mode 1: Interactive CLI
+## 🛠️ Usage 1: AI Coding Assistant (IDE Integration)
 
-Run the CLI for personal terminal usage:
+You can use this project as a free backend for powerful AI coding tools like **Continue.dev**, **Cline**, **Cursor**, and **T3 Code**.
+
+### Start the API Server
+Leave this running in the background:
+```bash
+uvicorn api:app --reload
+```
+*The server will start on `http://localhost:8000`.*
+
+### Setup Guides
+
+#### 🟦 Continue.dev (VS Code) - *Recommended*
+1. Install the [Continue](https://continue.dev/) extension in VS Code.
+2. Open `~/.continue/config.json` (or click the gear icon in the extension).
+3. Add the following to your `models` list:
+```json
+{
+  "title": "DeepSeek Swarm",
+  "provider": "openai",
+  "model": "deepseek-chat",
+  "apiBase": "http://localhost:8000/v1",
+  "apiKey": "sk-anything"
+}
+```
+
+#### ⬛ Cursor IDE
+*Note: Cursor's free tier restricts custom API URLs. If you have the required plan:*
+1. Open **Cursor Settings** → **Models** → **Add Model**.
+2. **Model Name:** `deepseek-chat`
+3. **API Base URL:** `http://localhost:8000/v1`
+4. **API Key:** `sk-anything` (any string works)
+5. Ensure **"Override OpenAI Base URL"** is toggled ON.
+
+#### 🤖 Claude Code (CLI)
+```bash
+export OPENAI_API_BASE="http://localhost:8000/v1"
+export OPENAI_API_KEY="sk-anything"
+export OPENAI_MODEL="deepseek-chat"
+claude
+```
+
+#### 💻 T3 Code (Desktop App)
+In settings, select **OpenAI** as the provider, set the Base URL to `http://localhost:8000/v1`, Model to `deepseek-chat`, and enter any dummy API key.
+
+---
+
+## 💻 Usage 2: Interactive Terminal CLI
+
+Prefer the terminal? Run the CLI to utilize the multi-agent Swarm mode!
+
 ```bash
 python deepseek_cli.py
 ```
 
 ### CLI Commands
-
 | Command | Description |
 |---------|-------------|
 | `/think` | Toggle DeepThink (R1) reasoning mode |
@@ -52,149 +105,8 @@ python deepseek_cli.py
 | `/clearall` | **Permanently delete ALL chats from DeepSeek account** |
 | `/exit` | Quit the CLI |
 
----
-
-## 🌐 Mode 2: REST API Server
-
-Integrate the Swarm system into your own applications!
-
-### Starting the Server
-```bash
-uvicorn api:app --reload
-```
-The server will start at `http://localhost:8000`.
-
-### 🌍 Exposing the API Globally (ngrok)
-To use this API in a live web app (React, Vercel, etc.) or access it from anywhere in the world, you can expose your local server using **ngrok**:
-
-1. Install ngrok from [ngrok.com](https://ngrok.com/).
-2. Add your auth token (only needed once):
-   ```bash
-   ngrok config add-authtoken YOUR_NGROK_TOKEN
-   ```
-3. Run ngrok to expose port 8000. You can claim a **free static domain** in the ngrok dashboard so your API URL never changes:
-   ```bash
-   ngrok http --domain=your-custom-name.ngrok-free.app 8000
-   ```
-Now your API is permanently live at `https://your-custom-name.ngrok-free.app/chat` and can be fetched from anywhere!
-
-
-### API Endpoints
-
-#### 1. Health Check
-- **Endpoint:** `GET /`
-- **Response:**
-  ```json
-  {
-    "status": "running",
-    "auth_status": "Logged In"
-  }
-  ```
-
-#### 2. Chat / Swarm Mode
-- **Endpoint:** `POST /chat`
-- **Headers:** `Content-Type: application/json`
-- **Payload:**
-  ```json
-  {
-    "prompt": "Your question here",
-    "swarm_mode": true,
-    "num_workers": 4,
-    "thinking_enabled": true,
-    "search_enabled": false,
-    "model_class": "deepseek_chat",
-    "context_summary": "Pass previous chat history here for memory."
-  }
-  ```
-- **Response Example:**
-  ```json
-  {
-    "status": "success",
-    "data": {
-      "boss_response": "The final synthesized answer...",
-      "worker_responses": [
-         {"worker": "Worker-1", "response": "Analysis from angle 1..."},
-         {"worker": "Worker-2", "response": "Analysis from angle 2..."}
-      ]
-    }
-  }
-  ```
-
-#### 3. Delete All Chats (Data Control)
-- **Endpoint:** `DELETE /chats`
-- **Description:** Permanently wipes all chat history from your DeepSeek account.
-- **Response:**
-  ```json
-  {
-    "status": "success",
-    "message": "All chats have been permanently deleted."
-  }
-  ```
-
----
-
-## 🔌 Mode 3: OpenAI-Compatible Endpoint (Cursor / Claude Code)
-
-This API also exposes a **fully OpenAI-compatible** `/v1/chat/completions` endpoint with **SSE Streaming** support. This means you can use it as a drop-in replacement for OpenAI in any tool that supports custom API providers.
-
-#### List Models
-- **Endpoint:** `GET /v1/models`
-- **Response:** Returns `deepseek-chat` and `deepseek-reasoner`.
-
-#### Chat Completions (Streaming & Non-Streaming)
-- **Endpoint:** `POST /v1/chat/completions`
-- **Payload (OpenAI format):**
-  ```json
-  {
-    "model": "deepseek-chat",
-    "messages": [
-      {"role": "system", "content": "You are a helpful assistant."},
-      {"role": "user", "content": "Write a Python function to sort a list."}
-    ],
-    "stream": true
-  }
-  ```
-- **Models:** Use `deepseek-chat` (Instant) or `deepseek-reasoner` (Expert/R1).
-
-### 🖥️ Setup in Cursor IDE
-1. Open **Cursor Settings** → **Models** → **Add Model**.
-2. Set:
-   - **Model Name:** `deepseek-chat`
-   - **API Base URL:** `http://localhost:8000/v1`  
-     *(or your ngrok URL: `https://your-name.ngrok-free.app/v1`)*
-   - **API Key:** `sk-anything` *(any non-empty string works, our server doesn't check keys)*
-3. Click **Save**. Now select `deepseek-chat` as your model in Cursor and start coding!
-
-### 🤖 Setup in Claude Code (CLI)
-Add this to your Claude Code config (or set environment variables):
-```bash
-export OPENAI_API_BASE="http://localhost:8000/v1"
-export OPENAI_API_KEY="sk-anything"
-export OPENAI_MODEL="deepseek-chat"
-```
-Or if using ngrok:
-```bash
-export OPENAI_API_BASE="https://your-name.ngrok-free.app/v1"
-export OPENAI_API_KEY="sk-anything"
-export OPENAI_MODEL="deepseek-chat"
-```
-
-### 🧪 Quick Test (curl)
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "deepseek-chat",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": false
-  }'
-```
-
----
-
-## 🧠 How Swarm Mode Works
-
-```
+### 🧠 How Swarm Mode Works
+```text
 ╭───────────────────────────────────────────────────╮
 │                  Your Prompt                      │
 ╰───────────────────────────────────────────────────╯
@@ -204,9 +116,7 @@ curl http://localhost:8000/v1/chat/completions \
         ╰────────────────┬────────────────╯
                          │
   ╭───────┬──────────────┼──────────────┬───────╮
-  │       │              │              │       │
  W1      W2             W3             W4      W5  (Parallel Processing)
-  │       │              │              │       │
   ╰───────┴──────────────┼──────────────┴───────╯
                          │
         ╭────────────────┴────────────────╮
@@ -218,7 +128,30 @@ curl http://localhost:8000/v1/chat/completions \
 ╰───────────────────────────────────────────────────╯
 ```
 
+---
+
+## 🌐 Usage 3: Expose API Globally (ngrok)
+
+Want to use your API in a live web app or access it remotely? Expose your local port using [ngrok](https://ngrok.com/):
+
+```bash
+ngrok http --domain=your-custom-name.ngrok-free.app 8000
+```
+*Now your API is permanently live at `https://your-custom-name.ngrok-free.app/v1`!*
+
+---
+
+## 📜 API Endpoints Reference
+
+If you are building your own tools, the REST server supports the following routes:
+
+- `GET /v1/models`: Returns standard OpenAI-compatible model list (`deepseek-chat`, `deepseek-reasoner`).
+- `POST /v1/chat/completions`: Standard chat completions with `stream: true` (SSE) and `stream: false` support.
+- `POST /v1/completions`: Legacy text completions endpoint (often used for autocomplete tools).
+- `POST /chat`: Custom Swarm endpoint (supports passing `swarm_mode: true` and `num_workers: 4`).
+- `DELETE /chats`: Permanently wipes all chat history from your DeepSeek account.
+
+---
+
 ## License
-
 MIT
-
