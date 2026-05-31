@@ -72,22 +72,27 @@ models:
     model: deepseek-chat
     apiBase: http://localhost:8000/v1
     apiKey: sk-anything
+  - name: DeepSeek Reasoner (R1)
+    provider: openai
+    model: deepseek-reasoner
+    apiBase: http://localhost:8000/v1
+    apiKey: sk-anything
 ```
 
 #### ⬛ Cursor IDE
 *Note: Cursor's free tier restricts custom API URLs. If you have the required plan:*
 1. Open **Cursor Settings** → **Models** → **Add Model**.
-2. **Model Name:** `deepseek-chat`
+2. Add both models: `deepseek-chat` and `deepseek-reasoner`.
 3. **API Base URL:** `http://localhost:8000/v1`
 4. **API Key:** `sk-anything` (any string works)
 5. Ensure **"Override OpenAI Base URL"** is toggled ON.
 
 #### 🤖 Claude Code (CLI)
-You can point Anthropic's official Claude Code CLI to your DeepSeek API:
+You can point Anthropic's official Claude Code CLI to your DeepSeek API (use either `deepseek-chat` or `deepseek-reasoner`):
 ```bash
 export OPENAI_API_BASE="http://localhost:8000/v1"
 export OPENAI_API_KEY="sk-anything"
-export OPENAI_MODEL="deepseek-chat"
+export OPENAI_MODEL="deepseek-reasoner"
 claude
 ```
 
